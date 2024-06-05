@@ -26,8 +26,9 @@ version: "3.5"
 services:
   speech2text:
     image: whats
+    restart: always
     environment:
-       - OPENAI_API_KEY=sk-xxxxxxx
+       - OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxx
        - GROUPS=aaaaaaaa-bbbbbbb@g.us,yyyyyyyyy-xxxxxxxx@g.us
        - PATH_MP3=/mp3
        - PATH_SESSION=/session
@@ -36,5 +37,15 @@ services:
        - mp3:/mp3
 volumes:
   session:
+    driver: local
+    driver_opts:
+      type: none
+      device: /full/path/to/WhatsAppTranscription/session
+      o: bind
   mp3:
+    driver: local
+    driver_opts:
+      type: none
+      device: /full/path/to//WhatsAppTranscription/mp3
+      o: bind
 ```

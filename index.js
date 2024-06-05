@@ -32,26 +32,27 @@ function start(client) {
     client.onAnyMessage(async message => {
         console.log(message);
 
-        if (((allowedGroups.indexOf(message.chatId) !== -1) || message.isGroupMsg === false) && message.mimetype && message.mimetype.includes("audio")) {
-            const filename = `${path_mp3}/${message.t}.${mime.extension(message.mimetype)}`;
+        if ((allowedGroups.includes(message.chatId) || !message.isGroupMsg) && message.type === "ptt") {
+            const filename = `${path_mp3}/${message.id}.${mime.extension(message.mimetype)}`;
             const mediaData = await wa.decryptMedia(message);
 
-            fs.writeFile(filename, mediaData, async function (err) {
+            fs.writeFile(filename, mediaData, err => {
                 if (err) { return console.log(err); }
-                console.log('The file was saved!');
-                // call OpenAI's API
-                const resp = await openai.createTranscription(
-                        fs.createReadStream(`${filename}`),
-                        "whisper-1"
-                );
-                console.log(`Texto Traduzido: ${resp.data.text}`);
-                console.log(`ChatId: ${message.chatId}`);
-                console.log(`MId: ${message.id}`);
-                await client.sendText( message.chatId, `🗣️ \`\`\`${resp.data.text}\`\`\`` );
-                //await client.reply(    message.chatId, `🗣️ \`\`\`${resp.data.text}\`\`\``, message);
+                console.log('Voice file saved:', filename);
             });
-
         }
 
+        if (message.body === "!ler" && message.quotedMsg && message.quotedMsg.type === "ptt") {
+            const originalMessageId = message.quotedMsg.id;
+            const filePath = `${path_mp3}/${originalMessageId}.${mime.extension(message.quotedMsg.mimetype)}`;
+
+            if (fs.existsSync(filePath)) {
+                const resp = await openai.createTranscription(fs.createReadStream(filePath), "whisper-1");
+                console.log(`Transcribed text: ${resp.data.text}`);
+                await client.reply(message.chatId, `🗣️ ${resp.data.text}`, message.id);
+            } else {
+                console.log('File not found for transcription:', filePath);
+            }
+        }
     });
 }
