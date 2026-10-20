@@ -9,12 +9,15 @@ const configuration = new Configuration( { apiKey: process.env.OPENAI_API_KEY } 
 const openai = new OpenAIApi(configuration);
 
 const path_mp3 = process.env.PATH_MP3 ? process.env.PATH_MP3 : '.';
-const sessionDataPath = process.env.PATH_SESSION ? process.env.PATH_SESSION : './';
 const groups = process.env.GROUPS ? process.env.GROUPS : 'xxxx,yyyy';
 const allowedGroups = groups.split(',');
 
 // Palavra que dispara a transcricao quando enviada em resposta a um audio. Pode ser trocada pelo .env
 const TRIGGER_WORD = process.env.TRIGGER_WORD ? process.env.TRIGGER_WORD : 'ler';
+
+// Modelo usado para traduzir quando o gatilho e uma bandeira (o whisper so traduz para ingles)
+const TRANSLATE_MODEL = process.env.TRANSLATE_MODEL ? process.env.TRANSLATE_MODEL : 'gpt-4o-mini';
+const regionNames = new Intl.DisplayNames( ['en'], { type: 'region' } );
 
 // Evita transcrever o mesmo audio duas vezes (varias pessoas pedindo)
 const alreadyTranscribed = new Set();
@@ -72,7 +75,6 @@ checkOpenAI().then( () => {
     logConsole: true,
     popup: true,
     qrTimeout: 300,
-    sessionDataPath,
     chromiumArgs: ['--no-sandbox'], // container roda como root
   });
 }).then( client => {
@@ -88,30 +90,21 @@ checkOpenAI().then( () => {
     }
   });
 
-  // O open-wa 5.x so grava a sessao (PATH_SESSION/<sessionId>.data.json) ao parar o client.
-  // No container o node e o PID 1 e ignora SIGTERM sem handler -> docker mata com SIGKILL e a sessao se perde.
-  let stopping = false;
-  const shutdown = async signal => {
-    if ( stopping ) { return; }
-    stopping = true;
-    console.log(`${signal} recebido, salvando sessao...`);
-    try {
-      await client.stop('signal');
-    } catch ( err ) {
-      console.log('Erro ao encerrar o client:', err);
-    }
-    process.exit(0);
-  };
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
-
 }).catch( err => {
   console.log('❌', err.message);
   process.exit(1);
 });
 
-function isTriggerMessage( message ) {
-  return String( message.body || '' ).trim().toLowerCase() === TRIGGER_WORD.toLowerCase();
+// Retorna null se nao for gatilho, { country: null } para o TRIGGER_WORD (so transcreve)
+// ou { country: 'FR', flag: '🇫🇷' } se for a bandeira de um pais (transcreve e traduz).
+function parseTrigger( message ) {
+  const body = String( message.body || '' ).trim();
+  if ( body.toLowerCase() === TRIGGER_WORD.toLowerCase() ) { return { country: null }; }
+
+  // Bandeira = 2 "regional indicator symbols" (U+1F1E6..U+1F1FF), um para cada letra do codigo ISO
+  if ( ! /^[\u{1F1E6}-\u{1F1FF}]{2}$/u.test( body ) ) { return null; }
+  const country = [ ...body ].map( c => String.fromCharCode( c.codePointAt(0) - 0x1F1E6 + 65 ) ).join('');
+  return { country, flag: body };
 }
 
 // Id da mensagem citada (o audio ao qual o "ler" respondeu)
@@ -131,7 +124,8 @@ function isAudio( message ) {
 
 async function processMessage( message, client ) {
 
-  if ( ! isTriggerMessage( message ) ) { return; }            // mensagem diferente de "ler" -> ignora
+  const trigger = parseTrigger( message );
+  if ( ! trigger ) { return; }                                // nem "ler" nem bandeira -> ignora
   if ( ! isAllowedChat( message ) ) { return; }               // grupo nao autorizado
 
   const msgId = getQuotedMessageId( message );
@@ -140,13 +134,14 @@ async function processMessage( message, client ) {
   const audioMessage = await client.getMessageById( msgId );
   if ( ! isAudio( audioMessage ) ) { return; }                // responderam algo que nao e audio
 
-  if ( alreadyTranscribed.has( msgId ) ) { return; }          // ja transcrito
-  alreadyTranscribed.add( msgId );
+  const key = `${msgId}|${trigger.country || ''}`;            // cada idioma conta separado
+  if ( alreadyTranscribed.has( key ) ) { return; }            // ja transcrito/traduzido
+  alreadyTranscribed.add( key );
 
   try {
-    await transcribe( audioMessage, client );
+    await transcribe( audioMessage, client, trigger );
   } catch ( err ) {
-    alreadyTranscribed.delete( msgId );                       // permite nova tentativa
+    alreadyTranscribed.delete( key );                         // permite nova tentativa
     throw err;
   }
 }
@@ -167,7 +162,21 @@ async function decryptAudio( message ) {
   return Buffer.concat( [ decipher.update( encrypted ), decipher.final() ] );
 }
 
-async function transcribe( audioMessage, client ) {
+// Traduz o texto para o idioma principal do pais (codigo ISO 3166, ex: 'FR')
+async function translate( text, country ) {
+  const countryName = regionNames.of( country ) || country;
+  const resp = await openai.createChatCompletion({
+    model: TRANSLATE_MODEL,
+    temperature: 0,
+    messages: [
+      { role: 'system', content: `You are a translator. Translate the user's text into the main language spoken in ${countryName} (ISO 3166 code ${country}). Reply with only the translation, nothing else.` },
+      { role: 'user', content: text },
+    ],
+  });
+  return resp.data.choices[0].message.content.trim();
+}
+
+async function transcribe( audioMessage, client, trigger ) {
 
   const filename = `${path_mp3}/${audioMessage.t}.${mime.extension(audioMessage.mimetype)}`;
 
@@ -175,7 +184,13 @@ async function transcribe( audioMessage, client ) {
 
   const resp = await openai.createTranscription( fs.createReadStream( filename ), "whisper-1" );
 
-  await client.reply( audioMessage.chatId, `🗣️ \`\`\`${resp.data.text}\`\`\``, audioMessage.id );
+  if ( ! trigger.country ) {
+    await client.reply( audioMessage.chatId, `🗣️ \`\`\`${resp.data.text}\`\`\``, audioMessage.id );
+    return;
+  }
+
+  const translated = await translate( resp.data.text, trigger.country );
+  await client.reply( audioMessage.chatId, `${trigger.flag} \`\`\`${translated}\`\`\``, audioMessage.id );
 
   //await fs.promises.unlink( filename )
 }

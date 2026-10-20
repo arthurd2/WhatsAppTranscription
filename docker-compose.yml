@@ -4,11 +4,8 @@ services:
     build: .
       #    entrypoint: ["/usr/bin/tail","-f","/dev/null"]
     env_file: .env
-    stop_grace_period: 60s   # tempo para o open-wa salvar a sessao ao parar
     volumes:
-       - session:/session
        - mp3:/mp3
          #- ./:/app 
 volumes:
-  session:
   mp3:

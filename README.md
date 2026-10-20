@@ -41,7 +41,6 @@ Use `DEBUG=1 node index.js` to log every reaction and message received.
 | `GROUPS`           | —       | Comma-separated group IDs (`...@g.us`) allowed to be transcribed. |
 | `TRIGGER_REACTION` | `🗣️`    | Emoji reaction that triggers the transcription. |
 | `PATH_MP3`         | `.`     | Directory where the audio files are saved. |
-| `PATH_SESSION`     | `./`    | Directory for the WhatsApp session data. Persist it to avoid scanning the QR code again. |
 | `DEBUG`            | —       | Enables verbose logging. |
 
 # Docker
@@ -69,12 +68,9 @@ services:
     env_file: .env
     environment:
        - PATH_MP3=/mp3
-       - PATH_SESSION=/session
     volumes:
-       - session:/session
        - mp3:/mp3
 volumes:
-  session:
   mp3:
 ```
 
